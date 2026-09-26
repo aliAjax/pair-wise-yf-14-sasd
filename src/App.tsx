@@ -1,126 +1,170 @@
+import { useMemo } from "react";
 import "./styles.css";
-
-const project = {
-  "sourceNo": 2,
-  "id": "hxyfront-62002",
-  "port": 62002,
-  "title": "剧场灯光Cue表管理",
-  "domain": "剧场灯光",
-  "prompt": "做一个给剧场灯光师使用的灯位与Cue表管理前端项目，可以维护演出名称、灯具编号、通道号、色片、焦点位置、亮度预设和Cue触发顺序。页面需要有舞台平面灯位图、Cue列表、当前场景预览、灯具筛选和演出版本备注，适合排练期间快速调整。",
-  "palette": [
-    "#7c3aed",
-    "#f59e0b",
-    "#06b6d4"
-  ],
-  "metrics": [
-    "灯具数量",
-    "Cue数量",
-    "当前场景",
-    "待确认焦点"
-  ],
-  "filters": [
-    "面光",
-    "侧光",
-    "逆光",
-    "效果光"
-  ],
-  "fields": [
-    "演出名称",
-    "灯具编号",
-    "通道号",
-    "色片",
-    "焦点位置",
-    "亮度预设"
-  ],
-  "records": [
-    [
-      "Cue 12",
-      "冷蓝侧光",
-      "CH 021-028，亮度65%",
-      "二幕开场"
-    ],
-    [
-      "Cue 18",
-      "追光入场",
-      "FOH-03，焦点门口",
-      "需演员走位确认"
-    ],
-    [
-      "Cue 24",
-      "暖色谢幕",
-      "全台面光80%",
-      "版本B"
-    ]
-  ]
-};
+import { CueList } from "./components/CueList";
+import { FixturePanel } from "./components/FixturePanel";
+import { StagePlan } from "./components/StagePlan";
+import { buildReferenceIndex } from "./logic/engine";
+import { useDesk } from "./state/useDesk";
 
 function App() {
+  const { state, dispatch, previewCue, previewResult, currentCue, resetToSeed } = useDesk();
+  const { data, results, blocked, lastRecompute } = state;
+
+  // 灯具 -> 引用数量（数据/视图层派生，判定层不掺页面逻辑）
+  const cueCountByFixture = useMemo(() => {
+    const index = buildReferenceIndex(data.cues);
+    return new Map(Array.from(index, ([id, set]) => [id, set.size]));
+  }, [data.cues]);
+
+  const blockedCount = useMemo(
+    () => Array.from(results.values()).filter((r) => r.status === "blocked").length,
+    [results],
+  );
+  const darkCount = useMemo(
+    () => Array.from(results.values()).filter((r) => r.status === "warn").length,
+    [results],
+  );
+
+  // 预览 Cue 上造成超限的灯具 → 舞台图与灯具面板同时标红
+  const offenderIds = useMemo(
+    () => new Set(previewResult?.offenderIds ?? []),
+    [previewResult],
+  );
+
+  const blockedResult = blocked ? results.get(blocked.cueId) : null;
+  const recomputeNames = lastRecompute
+    ? data.cues
+        .filter((c) => lastRecompute.cueIds.includes(c.id))
+        .map((c) => c.name)
+    : [];
+
   return (
     <main className="app">
-      <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
-      </section>
+      <header className="topbar">
+        <div>
+          <p>追光校对台 · 夜戏排练现场</p>
+          <h1>
+            <input
+              className="show-name"
+              value={data.showName}
+              onChange={(e) => dispatch({ type: "setShowName", name: e.target.value })}
+            />
+          </h1>
+        </div>
+        <div className="topbar-right">
+          <span className="current-scene">
+            当前场景：<b>{currentCue ? currentCue.name : "未起光"}</b>
+          </span>
+          <button className="ghost-btn" onClick={resetToSeed}>
+            恢复预置
+          </button>
+        </div>
+      </header>
 
       <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[86, 14, 7, 32][index] ?? 12}</strong>
-          </article>
-        ))}
+        <article>
+          <small>灯具数量</small>
+          <strong>{data.fixtures.length}</strong>
+        </article>
+        <article>
+          <small>Cue 数量</small>
+          <strong>{data.cues.length}</strong>
+        </article>
+        <article className={blockedCount ? "metric-bad" : ""}>
+          <small>超限拦截</small>
+          <strong>{blockedCount}</strong>
+        </article>
+        <article className={darkCount ? "metric-warn" : ""}>
+          <small>有暗点 Cue</small>
+          <strong>{darkCount}</strong>
+        </article>
       </section>
 
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}筛选</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存草稿</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
-        <div className="heading">
+      {/* 触发被拦截：停在当前 Cue，标出落点与超出的灯具 */}
+      {blocked && blockedResult && (
+        <section className="blocked-banner" role="alert">
           <div>
-            <p>历史记录</p>
-            <h2>近期工作台</h2>
+            <b>⛔ {blocked.cueName} 未触发：叠光超过 100%</b>
+            <span>
+              已停在当前场景（{currentCue ? currentCue.name : "未起光"}），原场景不动。
+              超出落点：
+              {blockedResult.pointResults
+                .filter((p) => p.over)
+                .map((p) => `${p.pointName} ${p.total}%`)
+                .join("、")}
+              ；超出灯具：
+              {Array.from(new Set(blockedResult.pointResults.flatMap((p) => p.offenderIds)))
+                .map(
+                  (id) =>
+                    data.fixtures.find((f) => f.id === id)?.name ?? id,
+                )
+                .join("、")}
+              。请在右侧调小对应灯具的亮度或光斑半径。
+            </span>
           </div>
-          <button>导出摘要</button>
+          <button onClick={() => dispatch({ type: "dismissBlocked" })}>
+            知道了
+          </button>
+        </section>
+      )}
+
+      <section className="layout">
+        <div className="left-col">
+          <StagePlan
+            fixtures={data.fixtures}
+            currentCue={currentCue}
+            previewCue={previewCue}
+            previewResult={previewResult}
+            offenderFixtureIds={offenderIds}
+            onMoveFixture={(id, x, y) => dispatch({ type: "updateFixture", id, patch: { x, y } })}
+            onMovePoint={(cueId, pointId, x, y) =>
+              dispatch({ type: "updatePoint", cueId, pointId, patch: { x, y } })
+            }
+          />
+          <FixturePanel
+            fixtures={data.fixtures}
+            cueCountByFixture={cueCountByFixture}
+            offenderIds={offenderIds}
+            onChange={(id, patch) => dispatch({ type: "updateFixture", id, patch })}
+            onDelete={(id) => dispatch({ type: "deleteFixture", id })}
+            onAdd={() => dispatch({ type: "addFixture" })}
+          />
         </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
+
+        <CueList
+          cues={data.cues}
+          fixtures={data.fixtures}
+          results={results}
+          currentCueId={data.currentCueId}
+          previewCueId={state.previewCueId}
+          blockedCueId={blocked?.cueId ?? null}
+          onPreview={(id) => dispatch({ type: "setPreview", cueId: id })}
+          onTrigger={(id) => dispatch({ type: "trigger", cueId: id })}
+          onUpdate={(id, patch) => dispatch({ type: "updateCue", id, patch })}
+          onDelete={(id) => dispatch({ type: "deleteCue", id })}
+          onToggleFixture={(cueId, fixtureId) =>
+            dispatch({ type: "toggleCueFixture", cueId, fixtureId })
+          }
+          onAddPoint={(cueId) => dispatch({ type: "addPoint", cueId })}
+          onUpdatePoint={(cueId, pointId, patch) =>
+            dispatch({ type: "updatePoint", cueId, pointId, patch })
+          }
+          onDeletePoint={(cueId, pointId) =>
+            dispatch({ type: "deletePoint", cueId, pointId })
+          }
+          onAddCue={() => dispatch({ type: "addCue" })}
+        />
       </section>
+
+      <footer className="statusbar">
+        {lastRecompute && (
+          <span>
+            {lastRecompute.full ? "全量校对" : "增量重算"}：{lastRecompute.reason}
+            {recomputeNames.length > 0 && <>（{recomputeNames.join("、")}）</>}
+          </span>
+        )}
+        <span>数据保存在本浏览器 localStorage，校对结果仅存内存，不上传任何服务器。</span>
+      </footer>
     </main>
   );
 }
